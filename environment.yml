@@ -1,4 +1,4 @@
-name: gaussian_splatting
+name: AEGS
 channels:
   - pytorch
   - conda-forge

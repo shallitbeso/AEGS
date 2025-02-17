@@ -89,3 +89,17 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
 def fast_ssim(img1, img2):
     ssim_map = FusedSSIMMap.apply(C1, C2, img1, img2)
     return ssim_map.mean()
+
+def mse_loss(reconstructed, gs_fea):
+    return F.mse_loss(reconstructed, gs_fea)
+
+
+# VAE 损失函数
+def vae_loss(reconstructed_x, x, mu, log_var):
+    # 重建损失（通常是均方误差）
+    recon_loss = F.mse_loss(reconstructed_x, x, reduction='sum')
+    # KL 散度损失
+    # 计算与标准正态分布的 KL 散度
+    kl_loss = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
+    # 总损失是重建损失和 KL 散度损失的加权和
+    return recon_loss + kl_loss
