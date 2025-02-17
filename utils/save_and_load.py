@@ -18,24 +18,31 @@ def construct_list_of_attributes(hidden):
         l.append('latent_{}'.format(i))
     return l
 
-def save_model(model, model_filename='model/autoencoder.pth'):
+def save_model(model, model_filename='ae/model/autoencoder.pth'):
+    # 确保目录存在
+    model_dir = os.path.dirname(model_filename)
+    if not os.path.exists(model_dir):
+        os.makedirs(model_dir, exist_ok=True)
     torch.save(model.state_dict(), model_filename)
     print(f"Model saved to {model_filename}")
 
-
-def save_latent_space(latent_space, latent_filename='model/latent_space.pth'):
+def save_latent_space(latent_space, latent_filename='ae/model/latent_space.pth'):
+    # 确保目录存在
+    latent_dir = os.path.dirname(latent_filename)
+    if not os.path.exists(latent_dir):
+        os.makedirs(latent_dir, exist_ok=True)
     torch.save(latent_space, latent_filename)
     print(f"Latent space saved to {latent_filename}")
 
 
-def load_model(model, model_filename='model/autoencoder.pth'):
+def load_model(model, model_filename='ae/model/autoencoder.pth'):
     model.load_state_dict(torch.load(model_filename))
     model.eval()  # 设置为评估模式
     print(f"Model loaded from {model_filename}")
     return model
 
 
-def load_latent_space(latent_filename='model/latent_space.pth'):
+def load_latent_space(latent_filename='ae/model/latent_space.pth'):
     """加载潜在空间"""
     latent_space = torch.load(latent_filename)
     print(f"Latent space loaded from {latent_filename}")

@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as transforms
 from torch.cuda import cudart
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 import os
 from datetime import datetime
 from tqdm import tqdm
@@ -36,6 +36,61 @@ class Autoencoder(nn.Module):
         reconstructed = self.decoder(z)  # 解码器部分：潜在空间到输出的映射
         return reconstructed, z
 
+
+# def train_model(model, gs: GaussianModel, gs_fea, epochs=100, learning_rate=1e-3, batch_size=150_0000):
+#     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+#     ema_loss_for_log = 0.0
+#     progress_bar = tqdm(range(0, epochs), desc="Training progress")
+#     model.train()
+#
+#     # 计算总的样本数量
+#     n_samples = gs_fea.shape[0]
+#     # 计算批次数量
+#     step_num = int(np.ceil(n_samples / batch_size))  # 总步数，向上取整
+#
+#     for epoch in range(epochs):
+#         total_loss = 0
+#         for batch_idx in range(step_num):
+#             # 计算每个批次的起始和结束位置
+#             start = batch_idx * batch_size
+#             end = min((batch_idx + 1) * batch_size, n_samples)  # 处理最后一个批次
+#
+#             # 提取当前批次数据
+#             batch_data = gs_fea[start:end]
+#             batch_data = batch_data.cuda()  # 将数据传输到 GPU
+#
+#             optimizer.zero_grad()  # 清除梯度
+#
+#             # 前向传播
+#             reconstructed, _ = model(batch_data)
+#
+#             # 计算损失
+#             loss = mse_loss(reconstructed, batch_data)
+#             loss.backward()  # 反向传播
+#             optimizer.step()  # 优化器更新参数
+#
+#             total_loss += loss.item()
+#
+#         # EMA损失
+#         ema_loss_for_log = 0.4 * total_loss + 0.6 * ema_loss_for_log
+#         if epoch % 10 == 0:
+#             progress_bar.set_postfix(
+#                 {"Loss": f"{ema_loss_for_log:.{7}f}"})
+#             progress_bar.update(10)
+#         if epoch == epochs - 1:
+#             progress_bar.close()
+#
+#     print("VAE Train Finish.")
+#
+#     save_model(model)
+#     reconstructed, latent_space = model(gs_fea)
+#     save_latent_space(latent_space)
+#     latent_ply(reconstructed, gs, "ae/model/latent.ply")
+#     save_compress_latent_ply(latent_space, gs, "ae/model/compress_latent.ply")
+#     new_gs = load_compress_latent_ply(model, "ae/model/compress_latent.ply")
+#     new_gs.save_ply("ae/model/point_cloud.ply")
+
+
 def train_model(model, gs: GaussianModel, gs_fea, epochs=100, learning_rate=1e-3):
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     ema_loss_for_log = 0.0
@@ -64,10 +119,10 @@ def train_model(model, gs: GaussianModel, gs_fea, epochs=100, learning_rate=1e-3
     save_model(model)
     reconstructed, latent_space = model(gs_fea)
     save_latent_space(latent_space)
-    latent_ply(reconstructed, gs, "model/latent.ply")
-    save_compress_latent_ply(latent_space, gs, "model/compress_latent.ply")
-    new_gs = load_compress_latent_ply(model, "model/compress_latent.ply")
-    new_gs.save_ply("model/point_cloud.ply")
+    latent_ply(reconstructed, gs, "ae/model/latent.ply")
+    save_compress_latent_ply(latent_space, gs, "ae/model/compress_latent.ply")
+    new_gs = load_compress_latent_ply(model, "ae/model/compress_latent.ply")
+    new_gs.save_ply("ae/model/point_cloud.ply")
 
 def get_gs_fea(gaussians: GaussianModel):
     g_xyz = gaussians.get_xyz.detach()  # 获取3D点坐标数据并从计算图中分离
@@ -95,7 +150,7 @@ def get_gs_fea(gaussians: GaussianModel):
 def handle_train(gaussians: GaussianModel, epochs):
     _, gs_fea = get_gs_fea(gaussians)
     model = Autoencoder().cuda()
-    train_model(model, gaussians, gs_fea=gs_fea, epochs = epochs, learning_rate=1e-3)
+    train_model(model, gaussians, gs_fea=gs_fea, epochs=epochs, learning_rate=1e-3)
 
 
 def get_gs_model(path):
@@ -110,6 +165,6 @@ def restore_gs_from_latent_space():
 
 if __name__ == "__main__":
     gaussians = get_gs_model(
-        "output/tandt/train/point_cloud/iteration_30000/point_cloud.ply")
+        "output/mipnerf360/bicycle/point_cloud/iteration_30000/point_cloud.ply")
     gaussians.save_ply("ae/model/source_gs.ply")
-    handle_train(gaussians, 1000)
+    handle_train(gaussians, 3)
