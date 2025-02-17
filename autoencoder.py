@@ -15,6 +15,27 @@ from scene.gaussian_model import GaussianModel
 from utils.save_and_load import *
 
 
+# class Autoencoder(nn.Module):
+#     def __init__(self, feat_dim=56, hidden=32):
+#         super(Autoencoder, self).__init__()
+#         self.feat_dim = feat_dim
+#         self.hidden = hidden
+#         self.encoder = nn.Sequential(
+#             nn.Linear(self.feat_dim, 512),  # 输入层到隐藏层
+#             nn.LeakyReLU(),  # 非线性激活函数
+#             nn.Linear(512, self.hidden)  # 隐藏层到潜在空间
+#         )
+#         self.decoder = nn.Sequential(
+#             nn.Linear(self.hidden, 512),  # 潜在空间到隐藏层
+#             nn.LeakyReLU(),  # 非线性激活函数
+#             nn.Linear(512, self.feat_dim)  # 隐藏层到输出层
+#         )
+#
+#     def forward(self, x):
+#         z = self.encoder(x)  # 编码器部分：输入到潜在空间的映射
+#         reconstructed = self.decoder(z)  # 解码器部分：潜在空间到输出的映射
+#         return reconstructed, z
+
 class Autoencoder(nn.Module):
     def __init__(self, feat_dim=56, hidden=32):
         super(Autoencoder, self).__init__()
@@ -35,61 +56,6 @@ class Autoencoder(nn.Module):
         z = self.encoder(x)  # 编码器部分：输入到潜在空间的映射
         reconstructed = self.decoder(z)  # 解码器部分：潜在空间到输出的映射
         return reconstructed, z
-
-
-# def train_model(model, gs: GaussianModel, gs_fea, epochs=100, learning_rate=1e-3, batch_size=150_0000):
-#     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-#     ema_loss_for_log = 0.0
-#     progress_bar = tqdm(range(0, epochs), desc="Training progress")
-#     model.train()
-#
-#     # 计算总的样本数量
-#     n_samples = gs_fea.shape[0]
-#     # 计算批次数量
-#     step_num = int(np.ceil(n_samples / batch_size))  # 总步数，向上取整
-#
-#     for epoch in range(epochs):
-#         total_loss = 0
-#         for batch_idx in range(step_num):
-#             # 计算每个批次的起始和结束位置
-#             start = batch_idx * batch_size
-#             end = min((batch_idx + 1) * batch_size, n_samples)  # 处理最后一个批次
-#
-#             # 提取当前批次数据
-#             batch_data = gs_fea[start:end]
-#             batch_data = batch_data.cuda()  # 将数据传输到 GPU
-#
-#             optimizer.zero_grad()  # 清除梯度
-#
-#             # 前向传播
-#             reconstructed, _ = model(batch_data)
-#
-#             # 计算损失
-#             loss = mse_loss(reconstructed, batch_data)
-#             loss.backward()  # 反向传播
-#             optimizer.step()  # 优化器更新参数
-#
-#             total_loss += loss.item()
-#
-#         # EMA损失
-#         ema_loss_for_log = 0.4 * total_loss + 0.6 * ema_loss_for_log
-#         if epoch % 10 == 0:
-#             progress_bar.set_postfix(
-#                 {"Loss": f"{ema_loss_for_log:.{7}f}"})
-#             progress_bar.update(10)
-#         if epoch == epochs - 1:
-#             progress_bar.close()
-#
-#     print("VAE Train Finish.")
-#
-#     save_model(model)
-#     reconstructed, latent_space = model(gs_fea)
-#     save_latent_space(latent_space)
-#     latent_ply(reconstructed, gs, "ae/model/latent.ply")
-#     save_compress_latent_ply(latent_space, gs, "ae/model/compress_latent.ply")
-#     new_gs = load_compress_latent_ply(model, "ae/model/compress_latent.ply")
-#     new_gs.save_ply("ae/model/point_cloud.ply")
-
 
 def train_model(model, gs: GaussianModel, gs_fea, epochs=100, learning_rate=1e-3):
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -123,6 +89,7 @@ def train_model(model, gs: GaussianModel, gs_fea, epochs=100, learning_rate=1e-3
     save_compress_latent_ply(latent_space, gs, "ae/model/compress_latent.ply")
     new_gs = load_compress_latent_ply(model, "ae/model/compress_latent.ply")
     new_gs.save_ply("ae/model/point_cloud.ply")
+
 
 def get_gs_fea(gaussians: GaussianModel):
     g_xyz = gaussians.get_xyz.detach()  # 获取3D点坐标数据并从计算图中分离
