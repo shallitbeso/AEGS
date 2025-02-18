@@ -53,18 +53,23 @@ def latent_ply(reconstructed, gs: GaussianModel, path):
     set_gs_with_reconstructed(reconstructed, gs)
     gs.save_ply(path)
 
-def set_gs_with_reconstructed(reconstructed, gs:GaussianModel):
-    N = reconstructed.size(0)
-
-    _features_dc = reconstructed[:, :3]  # 提取前 3 列 [N, 3]
-    _features_rest = reconstructed[:, 3:48]  # 提取第 4 到第 48 列 [N, 45]
-
+def all_to_separate(gs_all):
+    N = gs_all.size(0)
+    _features_dc = gs_all[:, :3]  # 提取前 3 列 [N, 3]
+    _features_rest = gs_all[:, 3:48]  # 提取第 4 到第 48 列 [N, 45]
     _features_dc = _features_dc.view(N, 1, 3)  # 这样会得到 [N, 1, 3]
     _features_rest = _features_rest.view(N, 15, 3)  # 这样会得到 [N, 15, 3]
+    _opacity = gs_all[:, 48:49]  # 提取第 49 列 [N, 1]
+    _scaling = gs_all[:, 49:52]  # 提取第 50 到第 52 列 [N, 3]
+    _rotation = gs_all[:, 52:]  # 提取剩余部分（第 53 到第 56 列）[N, 4]
+    return _features_dc, _features_rest, _opacity, _scaling, _rotation
 
-    _opacity = reconstructed[:, 48:49]  # 提取第 49 列 [N, 1]
-    _scaling = reconstructed[:, 49:52]  # 提取第 50 到第 52 列 [N, 3]
-    _rotation = reconstructed[:, 52:]  # 提取剩余部分（第 53 到第 56 列）[N, 4]
+def separate_to_all(gs_dc, gs_rest, gs_op, gs_sc, gs_rt):
+    gs_all = torch.cat([gs_dc, gs_rest, gs_op, gs_sc, gs_rt], dim=-1)
+    return gs_all
+
+def set_gs_with_reconstructed(reconstructed, gs:GaussianModel):
+    _features_dc, _features_rest, _opacity, _scaling, _rotation = all_to_separate(reconstructed)
 
     gs._features_dc = _features_dc
     gs._features_rest = _features_rest
