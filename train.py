@@ -22,6 +22,20 @@ from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+import subprocess
+import numpy as np
+
+cmd = 'nvidia-smi -q -d Memory |grep -A4 GPU|grep Used'
+result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE).stdout.decode().split('\n')
+use_gpu = str(np.argmin([int(x.split()[2]) for x in result[:-1]]))
+# 服务器CUDA_DEVICES设备号不对应
+if use_gpu == str(1):
+    use_gpu = str(0)
+elif use_gpu == str(0):
+    use_gpu = str(1)
+os.environ['CUDA_VISIBLE_DEVICES'] = use_gpu
+os.system('echo $CUDA_VISIBLE_DEVICES')
+
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -60,7 +74,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
 
-    use_sparse_adam = opt.optimizer_type == "sparse_adam" and SPARSE_ADAM_AVAILABLE 
+    use_sparse_adam = opt.optimizer_type == "sparse_adam" and SPARSE_ADAM_AVAILABLE
     depth_l1_weight = get_expon_lr_func(opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations)
 
     viewpoint_stack = scene.getTrainCameras().copy()
@@ -78,7 +92,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 net_image_bytes = None
                 custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
                 if custom_cam != None:
-                    net_image = render(custom_cam, gaussians, pipe, background, scaling_modifier=scaling_modifer, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)["render"]
+                    net_image = render(custom_cam, gaussians, pipe, background, scaling_modifier=scaling_modifer, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE, test=True)["render"]
                     net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
                 network_gui.send(net_image_bytes, dataset.source_path)
                 if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
@@ -116,6 +130,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             image *= alpha_mask
 
         # Loss
+        addition_loss = 0
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
         if FUSED_SSIM_AVAILABLE:
@@ -123,7 +138,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         else:
             ssim_value = ssim(image, gt_image)
 
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
+        if opt.prune_iterations_start < iteration < opt.prune_iterations_end:
+            addition_loss = gaussians.addtional_loss(opt)
+
+            # if iteration % 20 == 0:
+            #     with open("addition_loss.txt", "a", encoding="utf-8") as f:
+            #         f.write(f"{addition_loss.item():.6f}\n")  # 添加换行符，保留6位小数（可修改）
+
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value) + addition_loss
+        else:
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
 
         # Depth regularization
         Ll1depth_pure = 0.0
@@ -133,7 +157,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             depth_mask = viewpoint_cam.depth_mask.cuda()
 
             Ll1depth_pure = torch.abs((invDepth  - mono_invdepth) * depth_mask).mean()
-            Ll1depth = depth_l1_weight(iteration) * Ll1depth_pure 
+            Ll1depth = depth_l1_weight(iteration) * Ll1depth_pure
             loss += Ll1depth
             Ll1depth = Ll1depth.item()
         else:
@@ -149,11 +173,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ema_Ll1depth_for_log = 0.4 * Ll1depth + 0.6 * ema_Ll1depth_for_log
 
             if iteration % 10 == 0:
-                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}", "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}"})
+                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}", "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}", "Addition Loss": f"{addition_loss:.{7}f}"} )
                 progress_bar.update(10)
             if iteration == opt.iterations:
                 progress_bar.close()
 
+            gaussians.prune_before_render(opt, iteration)
             # Log and save
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background, 1., SPARSE_ADAM_AVAILABLE, None, dataset.train_test_exp), dataset.train_test_exp)
             if (iteration in saving_iterations):
@@ -169,9 +194,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold, radii)
-                
+
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
+
+            gaussians.prune_after_render(opt, iteration, scene=scene, pipe=pipe, background=bg, render=render)
 
             # Optimizer step
             if iteration < opt.iterations:
@@ -188,6 +215,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+    gaussians.print_mask()
+
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
@@ -211,6 +240,30 @@ def prepare_output_and_logger(args):
         print("Tensorboard not available: not logging progress")
     return tb_writer
 
+def get_logger(path):
+    import logging
+
+    # 确保日志目录存在
+    os.makedirs(path, exist_ok=True)
+
+    # 创建日志记录器对象
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)  # 设置日志级别为INFO
+
+    fileinfo = logging.FileHandler(os.path.join(path, "outputs.log"))  # 输出到文件
+    fileinfo.setLevel(logging.INFO)  # 设置文件日志级别
+    controlshow = logging.StreamHandler()  # 输出到控制台
+    controlshow.setLevel(logging.INFO)  # 设置控制台日志级别
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s: %(message)s")  # 设置日志格式
+    fileinfo.setFormatter(formatter)  # 应用格式到文件处理器
+    controlshow.setFormatter(formatter)  # 应用格式到控制台处理器
+
+    # 将文件和控制台处理器添加到日志记录器
+    logger.addHandler(fileinfo)
+    logger.addHandler(controlshow)
+
+    return logger  # 返回配置好的日志记录器
+
 def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs, train_test_exp):
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
@@ -228,7 +281,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 l1_test = 0.0
                 psnr_test = 0.0
                 for idx, viewpoint in enumerate(config['cameras']):
-                    image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["render"], 0.0, 1.0)
+                    image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs, test=True)["render"], 0.0, 1.0)
                     gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
                     if train_test_exp:
                         image = image[..., image.shape[-1] // 2:]
@@ -265,10 +318,20 @@ if __name__ == "__main__":
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument('--disable_viewer', action='store_true', default=False)
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
+    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[15_000])
     parser.add_argument("--start_checkpoint", type=str, default = None)
+    parser.add_argument("--gpu", type=str, default='-1')
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
+
+    model_path = args.model_path  # 获取模型路径
+
+    logger = get_logger(model_path)  # 获取日志记录器
+    logger.info(f'args: {args}')  # 打印参数信息
+    if args.gpu != '-1':  # 如果指定了使用GPU
+        os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)  # 设置CUDA设备
+        os.system("echo $CUDA_VISIBLE_DEVICES")  # 输出当前使用的GPU
+        logger.info(f'using GPU {args.gpu}')  # 打印使用的GPU信息
     
     print("Optimizing " + args.model_path)
 

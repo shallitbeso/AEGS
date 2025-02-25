@@ -1,3 +1,5 @@
+import shutil
+
 from torch import dtype
 
 from scene.gaussian_model import GaussianModel
@@ -115,3 +117,21 @@ def load_compress_latent_ply(model, path):
     gs._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
     gs.active_sh_degree = 3
     return gs
+
+# 递归复制path目录下的所有文件和子目录到ae_output文件夹
+def recursive_copy(src, dst):
+    # 检查源目录是否存在
+    if not os.path.exists(src):
+        print(f"Source path {src} does not exist.")
+        return
+    for item in os.listdir(src):
+        src_item = os.path.join(src, item)
+        dst_item = os.path.join(dst, item)
+        # 如果是文件，则直接复制
+        if os.path.isfile(src_item):
+            shutil.copy(src_item, dst_item)
+        # 如果是目录，则递归调用
+        elif os.path.isdir(src_item):
+            if not os.path.exists(dst_item):
+                os.makedirs(dst_item)  # 创建目标子目录
+            recursive_copy(src_item, dst_item)  # 递归复制

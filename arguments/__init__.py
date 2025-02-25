@@ -97,6 +97,16 @@ class OptimizationParams(ParamGroup):
         self.depth_l1_weight_final = 0.01
         self.random_background = False
         self.optimizer_type = "default"
+
+        # 采样层训练
+        self.mask_lr = 0.02
+        self.mask_prune_iter = 30_000
+        self.lambda_mask = 0.01
+        self.prune_iterations_start = 15_000
+        self.prune_iterations_end = 30_000
+
+        # autoencoder
+
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

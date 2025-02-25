@@ -19,32 +19,69 @@ from os import makedirs
 
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from gaussian_renderer import render
-from utils.loss_utils import mse_loss, l1_loss
+from utils.loss_utils import mse_loss, l1_loss, l2_loss
 
 from scene.gaussian_model import GaussianModel
 from scene import Scene
 from utils.save_and_load import *
 
 
+# class Autoencoder(nn.Module):
+#     def __init__(self, feat_dim=56, hidden=32):
+#         super(Autoencoder, self).__init__()
+#         self.feat_dim = feat_dim
+#         self.hidden = hidden
+#         self.encoder = nn.Sequential(
+#             nn.Linear(self.feat_dim, 512),  # 输入层到隐藏层
+#             nn.LeakyReLU(),  # 非线性激活函数
+#             nn.Linear(512, self.hidden)  # 隐藏层到潜在空间
+#         )
+#         self.decoder = nn.Sequential(
+#             nn.Linear(self.hidden, 512),  # 潜在空间到隐藏层
+#             nn.LeakyReLU(),  # 非线性激活函数
+#             nn.Linear(512, self.feat_dim)  # 隐藏层到输出层
+#         )
+#
+#     def forward(self, x):
+#         z = self.encoder(x)  # 编码器部分：输入到潜在空间的映射
+#         reconstructed = self.decoder(z)  # 解码器部分：潜在空间到输出的映射
+#         return reconstructed, z
+
 class Autoencoder(nn.Module):
-    def __init__(self, feat_dim=56, hidden=32):
+    def __init__(self, feat_dim=56, latent_dim=32):
         super(Autoencoder, self).__init__()
         self.feat_dim = feat_dim
-        self.hidden = hidden
+        self.latent_dim = latent_dim
+
+        # 编码器：提取点云特征
         self.encoder = nn.Sequential(
-            nn.Linear(self.feat_dim, 512),  # 输入层到隐藏层
-            nn.LeakyReLU(),  # 非线性激活函数
-            nn.Linear(512, self.hidden)  # 隐藏层到潜在空间
+            nn.Linear(feat_dim, 256),
+            nn.LeakyReLU(0.2),
+            nn.BatchNorm1d(256),
+
+            nn.Linear(256, 128),
+            nn.LeakyReLU(0.2),
+            nn.BatchNorm1d(128),
+
+            nn.Linear(128, latent_dim)  # 映射到潜在空间
         )
+
+        # 解码器：重建点云数据
         self.decoder = nn.Sequential(
-            nn.Linear(self.hidden, 512),  # 潜在空间到隐藏层
-            nn.LeakyReLU(),  # 非线性激活函数
-            nn.Linear(512, self.feat_dim)  # 隐藏层到输出层
+            nn.Linear(latent_dim, 128),
+            nn.LeakyReLU(0.2),
+            nn.BatchNorm1d(128),
+
+            nn.Linear(128, 256),
+            nn.LeakyReLU(0.2),
+            nn.BatchNorm1d(256),
+
+            nn.Linear(256, feat_dim)  # 还原到原始点云特征维度
         )
 
     def forward(self, x):
-        z = self.encoder(x)  # 编码器部分：输入到潜在空间的映射
-        reconstructed = self.decoder(z)  # 解码器部分：潜在空间到输出的映射
+        z = self.encoder(x)  # 编码
+        reconstructed = self.decoder(z)  # 解码
         return reconstructed, z
 
 
@@ -75,12 +112,14 @@ def train_model(model, gs: GaussianModel, gs_fea, first, epochs, path, learning_
         total_loss = 0
         optimizer.zero_grad()  # 清除梯度
         reconstructed, _ = model(gs_fea)
-        # loss = l1_loss(reconstructed,gs_fea)
-        loss = mse_loss(reconstructed, gs_fea)
+
+        # 损失改进
+        loss_mse = mse_loss(reconstructed, gs_fea)
+        loss = loss_mse
+
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
-
         ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
         if epoch % 10 == 0:
             progress_bar.set_postfix(
@@ -94,12 +133,12 @@ def get_gs_fea(gaussians: GaussianModel):
     g_xyz = gaussians.get_xyz.detach()  # 获取3D点坐标数据并从计算图中分离
     n_gaussian = g_xyz.shape[0]  # 获取点云数据中点的数量
 
-    # 每步处理的点的数量
-    per_step_size = 100_0000  # 默认每步处理100万点
-    if 100_0000 < n_gaussian < 110_0000:  # 如果点数在100万到110万之间，调整每步处理的点数
-        per_step_size = 110_0000
-    # 计算需要的训练步数
-    step_num = int(np.ceil(n_gaussian / per_step_size))  # 总步数，向上取整
+    # # 每步处理的点的数量
+    # per_step_size = 100_0000  # 默认每步处理100万点
+    # if 100_0000 < n_gaussian < 110_0000:  # 如果点数在100万到110万之间，调整每步处理的点数
+    #     per_step_size = 110_0000
+    # # 计算需要的训练步数
+    # step_num = int(np.ceil(n_gaussian / per_step_size))  # 总步数，向上取整
 
     _features_dc = gaussians._features_dc.detach().view(n_gaussian, -1)  # 从计算图中分离并重塑为[N, 3]
     _features_rest = gaussians._features_rest.detach().view(n_gaussian, -1)  # 从计算图中分离并重塑为[N, 45]
@@ -109,44 +148,19 @@ def get_gs_fea(gaussians: GaussianModel):
     gs_fea = torch.cat([_features_dc, _features_rest, _opacity, _scaling, _rotation],
                        dim=-1)  # 将各类特征拼接成一个大的特征向量 [N, 56]
 
-    return step_num, gs_fea
+    return gs_fea
 
-
-# # 预处理高斯模型，用于后续输入训练
-# def handle_train(gaussians: GaussianModel, first, epochs, path):
-#     _, gs_fea = get_gs_fea(gaussians)
-#     model = Autoencoder().cuda()
-#     train_model(model, gaussians, gs_fea=gs_fea, first = first, epochs=epochs, path=path, learning_rate=1e-3)
 
 def handle_train(gaussians: GaussianModel, first, epochs, path):
     # 创建目标文件夹ae_output，如果不存在的话
     output_dir = os.path.join('ae_output', path)
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-
-    # 递归复制path目录下的所有文件和子目录到ae_output文件夹
-    def recursive_copy(src, dst):
-        # 检查源目录是否存在
-        if not os.path.exists(src):
-            print(f"Source path {src} does not exist.")
-            return
-        for item in os.listdir(src):
-            src_item = os.path.join(src, item)
-            dst_item = os.path.join(dst, item)
-            # 如果是文件，则直接复制
-            if os.path.isfile(src_item):
-                shutil.copy(src_item, dst_item)
-            # 如果是目录，则递归调用
-            elif os.path.isdir(src_item):
-                if not os.path.exists(dst_item):
-                    os.makedirs(dst_item)  # 创建目标子目录
-                recursive_copy(src_item, dst_item)  # 递归复制
-
     # 调用递归函数复制文件和子目录
     recursive_copy(path, output_dir)
 
     # 获取高斯特征
-    _, gs_fea = get_gs_fea(gaussians)
+    gs_fea = get_gs_fea(gaussians)
     # 初始化模型
     model = Autoencoder().cuda()
     # 训练模型
@@ -167,7 +181,7 @@ if __name__ == "__main__":
     pp = PipelineParams(parser)
 
     parser.add_argument("--first_iteration", nargs="+", type=int, default=0)
-    parser.add_argument("--train_iteration", nargs="+", type=int, default=[1000])
+    parser.add_argument("--train_iteration", nargs="+", type=int, default=[10000])
     parser.add_argument('--hidden', type=int, default=32)
     args = parser.parse_args(sys.argv[1:])
 

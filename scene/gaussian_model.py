@@ -21,6 +21,7 @@ from utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
+import matplotlib.pyplot as plt
 
 try:
     from diff_gaussian_rasterization import SparseGaussianAdam
@@ -64,6 +65,7 @@ class GaussianModel:
         self.percent_dense = 0
         self.spatial_lr_scale = 0
         self.setup_functions()
+        self._mask = torch.empty(0)
 
     def capture(self):
         return (
@@ -79,6 +81,7 @@ class GaussianModel:
             self.denom,
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
+            self._mask
         )
     
     def restore(self, model_args, training_args):
@@ -93,7 +96,9 @@ class GaussianModel:
         xyz_gradient_accum, 
         denom,
         opt_dict, 
-        self.spatial_lr_scale) = model_args
+        self.spatial_lr_scale,
+        self._mask
+        ) = model_args
         self.training_setup(training_args)
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
@@ -133,6 +138,10 @@ class GaussianModel:
     def get_exposure(self):
         return self._exposure
 
+    @property
+    def get_mask(self):
+        return self._mask
+
     def get_exposure_from_name(self, image_name):
         if self.pretrained_exposures is None:
             return self._exposure[self.exposure_mapping[image_name]]
@@ -169,6 +178,7 @@ class GaussianModel:
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
+        self._mask = nn.Parameter(torch.ones((fused_point_cloud.shape[0], 1), device="cuda").requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
         self.exposure_mapping = {cam_info.image_name: idx for idx, cam_info in enumerate(cam_infos)}
         self.pretrained_exposures = None
@@ -186,7 +196,8 @@ class GaussianModel:
             {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},
             {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
-            {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
+            {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
+            {'params': [self._mask], 'lr': training_args.mask_lr, "name": "mask"},
         ]
 
         if self.optimizer_type == "default":
@@ -346,7 +357,7 @@ class GaussianModel:
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
 
-    def prune_points(self, mask):
+    def prune_points(self, mask, use_tmp_radii=True):
         valid_points_mask = ~mask
         optimizable_tensors = self._prune_optimizer(valid_points_mask)
 
@@ -356,12 +367,14 @@ class GaussianModel:
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
+        self._mask = optimizable_tensors["mask"]
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
 
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
-        self.tmp_radii = self.tmp_radii[valid_points_mask]
+        if use_tmp_radii:
+            self.tmp_radii = self.tmp_radii[valid_points_mask]
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
@@ -385,13 +398,15 @@ class GaussianModel:
 
         return optimizable_tensors
 
-    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_tmp_radii):
+    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_tmp_radii, new_mask):
         d = {"xyz": new_xyz,
         "f_dc": new_features_dc,
         "f_rest": new_features_rest,
         "opacity": new_opacities,
         "scaling" : new_scaling,
-        "rotation" : new_rotation}
+        "rotation" : new_rotation,
+        "mask": new_mask
+        }
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
         self._xyz = optimizable_tensors["xyz"]
@@ -400,6 +415,7 @@ class GaussianModel:
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
+        self._mask = optimizable_tensors["mask"]
 
         self.tmp_radii = torch.cat((self.tmp_radii, new_tmp_radii))
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -426,8 +442,9 @@ class GaussianModel:
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
         new_tmp_radii = self.tmp_radii[selected_pts_mask].repeat(N)
+        new_mask = self._mask[selected_pts_mask].repeat(N, 1)
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_tmp_radii)
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_tmp_radii, new_mask)
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
@@ -444,10 +461,11 @@ class GaussianModel:
         new_opacities = self._opacity[selected_pts_mask]
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
+        new_mask = self._mask[selected_pts_mask]
 
         new_tmp_radii = self.tmp_radii[selected_pts_mask]
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_tmp_radii)
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_tmp_radii, new_mask)
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, radii):
         grads = self.xyz_gradient_accum / self.denom
@@ -457,7 +475,9 @@ class GaussianModel:
         self.densify_and_clone(grads, max_grad, extent)
         self.densify_and_split(grads, max_grad, extent)
 
-        prune_mask = (self.get_opacity < min_opacity).squeeze()
+        # prune_mask = (self.get_opacity < min_opacity).squeeze()
+        prune_mask = torch.logical_or((torch.sigmoid(self._mask) <= 0.01).squeeze(),
+                                      (self.get_opacity < min_opacity).squeeze())
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
@@ -471,3 +491,42 @@ class GaussianModel:
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
+
+    def mask_prune(self, use_tmp_radii):
+        # 被选中的mask就是要删除的点
+        prune_mask = (torch.sigmoid(self._mask) <= 0.01).squeeze()
+        self.prune_points(prune_mask, use_tmp_radii)
+        torch.cuda.empty_cache()
+
+    def addtional_loss(self, opt):
+        return opt.lambda_mask * torch.mean((torch.sigmoid(self._mask)))
+
+    def prune_before_render(self, opt, iteration):
+        if iteration == opt.iterations:
+            self.mask_prune(use_tmp_radii=False)
+
+    def prune_after_render(self, opt, iteration, scene=None, pipe=None, background=None, render=None):
+        if iteration >= opt.densify_until_iter and iteration % opt.mask_prune_iter == 0:
+            self.mask_prune(use_tmp_radii=False)
+
+    def get_opacity_and_scales_for_train(self):
+        mask = ((torch.sigmoid(self._mask) > 0.01).float() - torch.sigmoid(self._mask)).detach() + torch.sigmoid(self._mask)
+        opacity = self.get_opacity * mask.to(self.get_opacity.device)
+        scales = self.get_scaling * mask.to(self.get_opacity.device)
+        return opacity, scales
+
+    def print_mask(self):
+        # 应用 sigmoid 函数到 _mask 上
+        sigmoid_mask = torch.sigmoid(self._mask)
+
+        # 将 _mask 转换为 NumPy 数组以便使用 matplotlib 绘制图表
+        sigmoid_mask_numpy = sigmoid_mask.detach().cpu().numpy()
+
+        # 可视化：绘制直方图，查看值的分布
+        plt.figure(figsize=(10, 6))
+        plt.hist(sigmoid_mask_numpy, bins=100, color='blue', alpha=0.7)
+        plt.title('Histogram of Sigmoid Mask')
+        plt.xlabel('Sigmoid Value')
+        plt.ylabel('Frequency')
+        plt.grid(True)
+        plt.show()
