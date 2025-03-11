@@ -493,12 +493,13 @@ class GaussianModel:
         self.denom[update_filter] += 1
 
     def mask_prune(self, use_tmp_radii):
+        self.print_mask()
         # 被选中的mask就是要删除的点
-        prune_mask = (torch.sigmoid(self._mask) <= 0.01).squeeze()
+        prune_mask = (torch.sigmoid(self._mask) <= 0.6).squeeze()
         self.prune_points(prune_mask, use_tmp_radii)
         torch.cuda.empty_cache()
 
-    def addtional_loss(self, opt):
+    def additional_loss(self, opt):
         return opt.lambda_mask * torch.mean((torch.sigmoid(self._mask)))
 
     def prune_before_render(self, opt, iteration):
@@ -510,7 +511,7 @@ class GaussianModel:
             self.mask_prune(use_tmp_radii=False)
 
     def get_opacity_and_scales_for_train(self):
-        mask = ((torch.sigmoid(self._mask) > 0.01).float() - torch.sigmoid(self._mask)).detach() + torch.sigmoid(self._mask)
+        mask = ((torch.sigmoid(self._mask) > 0.6).float() - torch.sigmoid(self._mask)).detach() + torch.sigmoid(self._mask)
         opacity = self.get_opacity * mask.to(self.get_opacity.device)
         scales = self.get_scaling * mask.to(self.get_opacity.device)
         return opacity, scales
@@ -530,3 +531,10 @@ class GaussianModel:
         plt.ylabel('Frequency')
         plt.grid(True)
         plt.show()
+
+    # def print_mask(self, step):
+    #     # 应用 sigmoid 函数到 _mask 上
+    #     sigmoid_mask = torch.sigmoid(self._mask)
+    #
+    #     # 记录直方图到 TensorBoard
+    #     self.writer.add_histogram('Sigmoid Mask', sigmoid_mask, global_step=step)

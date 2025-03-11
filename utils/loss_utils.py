@@ -103,3 +103,11 @@ def vae_loss(reconstructed_x, x, mu, log_var):
     kl_loss = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
     # 总损失是重建损失和 KL 散度损失的加权和
     return recon_loss + kl_loss
+
+# 熵损失
+def entropy_loss(z):
+    """计算潜在空间的熵损失，使其更均匀分布"""
+    mean = torch.mean(z, dim=0)
+    var = torch.var(z, dim=0)
+    loss = torch.mean(mean**2 + var - torch.log(var + 1e-6))  # 避免 log(0)
+    return loss

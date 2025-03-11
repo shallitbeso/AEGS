@@ -19,33 +19,12 @@ from os import makedirs
 
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from gaussian_renderer import render
-from utils.loss_utils import mse_loss, l1_loss, l2_loss
+from utils.loss_utils import mse_loss, l1_loss, l2_loss, entropy_loss
 
 from scene.gaussian_model import GaussianModel
 from scene import Scene
 from utils.save_and_load import *
 
-
-# class Autoencoder(nn.Module):
-#     def __init__(self, feat_dim=56, hidden=32):
-#         super(Autoencoder, self).__init__()
-#         self.feat_dim = feat_dim
-#         self.hidden = hidden
-#         self.encoder = nn.Sequential(
-#             nn.Linear(self.feat_dim, 512),  # 输入层到隐藏层
-#             nn.LeakyReLU(),  # 非线性激活函数
-#             nn.Linear(512, self.hidden)  # 隐藏层到潜在空间
-#         )
-#         self.decoder = nn.Sequential(
-#             nn.Linear(self.hidden, 512),  # 潜在空间到隐藏层
-#             nn.LeakyReLU(),  # 非线性激活函数
-#             nn.Linear(512, self.feat_dim)  # 隐藏层到输出层
-#         )
-#
-#     def forward(self, x):
-#         z = self.encoder(x)  # 编码器部分：输入到潜在空间的映射
-#         reconstructed = self.decoder(z)  # 解码器部分：潜在空间到输出的映射
-#         return reconstructed, z
 
 class Autoencoder(nn.Module):
     def __init__(self, feat_dim=56, latent_dim=32):
@@ -92,16 +71,17 @@ def train_model(model, gs: GaussianModel, gs_fea, first, epochs, path, learning_
     model.train()
     for epoch in range(first, epochs[-1] + 1):
         if epoch in epochs:
+            # 将特征输入到模型，得到重建向量和潜在向量
             reconstructed, latent_space = model(gs_fea)
             # 保存AE模型
             model_path = os.path.join(path, "model", "autoencoder_" + str(epoch) + ".pth")
             save_model(model, model_path)
-            # 保存压缩存储的点云
+            # 保存压缩存储的compress点云ply
             compress_ply_path = os.path.join(path, "compress", "compress_" + str(epoch) + ".ply")
             save_compress_latent_ply(latent_space, gs, compress_ply_path)
-            # 从压缩点云中重建高斯
+            # 从compress压缩点云中重建高斯点云
             reconstructed_gs = load_compress_latent_ply(model, compress_ply_path)
-            # 保存重建高斯到点云文件
+            # 保存重建高斯到point_cloud点云文件
             reconstructed_path = os.path.join(path, "reconstructed",
                                               "point_cloud_" + str(epoch) + ".ply")
             reconstructed_gs.save_ply(reconstructed_path)
@@ -111,10 +91,13 @@ def train_model(model, gs: GaussianModel, gs_fea, first, epochs, path, learning_
 
         total_loss = 0
         optimizer.zero_grad()  # 清除梯度
-        reconstructed, _ = model(gs_fea)
+        reconstructed, z = model(gs_fea)
 
-        # 损失改进
+        # 损失
         loss_mse = mse_loss(reconstructed, gs_fea)
+        # loss_entropy = entropy_loss(z)
+
+        # loss = loss_mse + 0.1 * loss_entropy
         loss = loss_mse
 
         loss.backward()
@@ -132,14 +115,6 @@ def train_model(model, gs: GaussianModel, gs_fea, first, epochs, path, learning_
 def get_gs_fea(gaussians: GaussianModel):
     g_xyz = gaussians.get_xyz.detach()  # 获取3D点坐标数据并从计算图中分离
     n_gaussian = g_xyz.shape[0]  # 获取点云数据中点的数量
-
-    # # 每步处理的点的数量
-    # per_step_size = 100_0000  # 默认每步处理100万点
-    # if 100_0000 < n_gaussian < 110_0000:  # 如果点数在100万到110万之间，调整每步处理的点数
-    #     per_step_size = 110_0000
-    # # 计算需要的训练步数
-    # step_num = int(np.ceil(n_gaussian / per_step_size))  # 总步数，向上取整
-
     _features_dc = gaussians._features_dc.detach().view(n_gaussian, -1)  # 从计算图中分离并重塑为[N, 3]
     _features_rest = gaussians._features_rest.detach().view(n_gaussian, -1)  # 从计算图中分离并重塑为[N, 45]
     _opacity = gaussians._opacity.detach()  # 从计算图中分离透明度数据 [N, 1]

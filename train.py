@@ -12,6 +12,9 @@
 import os
 import torch
 from random import randint
+
+# from caffe2.python.rnn.rnn_cell_test_util import sigmoid
+
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
 import sys
@@ -139,12 +142,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ssim_value = ssim(image, gt_image)
 
         if opt.prune_iterations_start < iteration < opt.prune_iterations_end:
-            addition_loss = gaussians.addtional_loss(opt)
-
-            # if iteration % 20 == 0:
-            #     with open("addition_loss.txt", "a", encoding="utf-8") as f:
-            #         f.write(f"{addition_loss.item():.6f}\n")  # 添加换行符，保留6位小数（可修改）
-
+            addition_loss = gaussians.additional_loss(opt)
             loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value) + addition_loss
         else:
             loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
@@ -215,8 +213,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
-    gaussians.print_mask()
 
+        # if iteration % 500 == 0 or iteration == 1:
+        # if iteration >= 15000 and iteration % 500 == 0:
+        #     gaussians.print_mask()
+        #     tb_writer.add_histogram('Sigmoid Mask', torch.sigmoid(gaussians.get_mask), global_step = iteration)
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
